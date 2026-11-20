@@ -37,7 +37,7 @@ A synthetic column contains `[10, 20, null]`, but its footer claims a minimum of
 
 The full report identifies row group 0, column `x`, and `lower_excludes_value`, with the claimed and observed bounds. The tests create this example by changing only the footer bytes of a real Parquet fixture, then verify the decoded rows are unchanged.
 
-Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"integer","value":"18446744073709551615"}`. Decimal, temporal and binary bounds also have lossless representations. Counts remain JSON integers. The Python API `audit_bytes(data)` returns native scalar values; `rgwitness.report.json_report` prepares the JSON-safe form without changing comparison evidence.
+Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"integer","value":"18446744073709551615"}`. Temporal bounds and observations use exact integer ticks, with a `comparison` object recording the representation and unit (`days`, `ms`, `us` or `ns`). This avoids truncating nanoseconds through Python datetime values and does not depend on pandas. Decimal and binary bounds also have lossless representations. Counts remain JSON integers. The Python API `audit_bytes(data)` returns native scalar values, with integer ticks for temporal columns; `rgwitness.report.json_report` prepares the JSON-safe form without changing comparison evidence.
 
 ## What is checked
 
@@ -50,9 +50,13 @@ Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"i
 
 The reader is PyArrow's `ParquetFile.iter_batches`, with explicit row groups and no predicate. rgwitness does not ask a query engine to recompute min/max, because engines can answer those queries from the same suspect metadata.
 
+## Temporal precision correction
+
+The original implementation could silently report false CONSISTENT for time64 nanosecond bounds within one microsecond when pandas was installed. Without pandas, PyArrow 25.0.1 failed loudly on the original temporal conversion path with INVALID (exit 2), rather than producing that silent false verdict. Temporal comparisons now use raw stored bounds and decoded integer ticks, avoiding that conversion dependency. This correction was validated on Linux CPython with PyArrow 25.0.1 only; no wider runtime or platform compatibility is claimed.
+
 ## Scope and limits
 
-Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder. Float and null-type columns are reported as unchecked, so a mixed file cannot silently receive CONSISTENT. Floating point NaN and signed-zero ordering require a separate design and are deliberately excluded.
+Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder. Temporal comparisons use raw stored bounds and integer-cast decoded ticks. An unexpected temporal physical storage type is unchecked rather than compared in mismatched units. Float and null-type columns are reported as unchecked, so a mixed file cannot silently receive CONSISTENT. Floating point NaN and signed-zero ordering require a separate design and are deliberately excluded.
 
 Nested layouts, duplicate field names, dotted field names and external column chunks are refused. The dotted-name restriction avoids ambiguity in reader column projection. No page-statistics, column-index, bloom-filter, checksum, encoding, sort-order or schema-evolution audit is claimed. A decoder's interpretation and row boundaries are still part of the evidence, not independently verified format parsing.
 
@@ -75,6 +79,6 @@ These are scope distinctions, not an exhaustive claim of novelty or a performanc
 python -m unittest discover -s tests -v
 ```
 
-Tests include real altered-footer bounds/null counts with unchanged decoded data, conservative bounds, missing statistics, all-null inputs, multiple row groups, multiple batches, supported type families, exact JSON large integers, strict exit codes, writerless FIFO refusal on POSIX, and a deterministic 500-case comparison oracle.
+Tests include real altered-footer bounds/null counts with unchanged decoded data, sub-microsecond time bounds that Python datetime values would truncate, exact temporal unit checks, conservative bounds, missing statistics, all-null inputs, multiple row groups, multiple batches, supported type families, exact JSON large integers, strict exit codes, writerless FIFO refusal on POSIX, and a deterministic 500-case comparison oracle.
 
 MIT license. No telemetry or network access is implemented by rgwitness.
