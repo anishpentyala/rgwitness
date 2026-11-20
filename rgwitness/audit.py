@@ -48,18 +48,40 @@ def audit_bytes(data: bytes) -> dict:
                 unchecked.append({'row_group': group_index, 'column': field.name,
                                   'reason': 'unsupported_type', 'type': str(field.type)})
                 continue
+            temporal = (pa.types.is_date(field.type) or pa.types.is_time(field.type)
+                        or pa.types.is_timestamp(field.type))
             stats = group.column(column_index).statistics
+            # Python datetime.time has only microsecond resolution. Compare
+            # temporal values as integer ticks, never through to_pylist's
+            # potentially lossy datetime conversion (notably TIME_NANOS).
+            if temporal:
+                physical = group.column(column_index).physical_type
+                expected = ('INT32' if pa.types.is_date32(field.type)
+                            or pa.types.is_time32(field.type) else 'INT64')
+                if physical != expected:
+                    unchecked.append({'row_group': group_index, 'column': field.name,
+                                      'reason': 'unsupported_temporal_storage',
+                                      'type': str(field.type)})
+                    continue
+                lower = stats.min_raw if stats and stats.has_min_max else None
+                upper = stats.max_raw if stats and stats.has_min_max else None
+                tick_type = pa.int32() if expected == 'INT32' else pa.int64()
+                unit = 'days' if pa.types.is_date32(field.type) else field.type.unit
+            else:
+                lower = stats.min if stats and stats.has_min_max else None
+                upper = stats.max if stats and stats.has_min_max else None
             claim = Claim(group.num_rows,
                           stats.null_count if stats and stats.has_null_count else None,
-                          bool(stats and stats.has_min_max),
-                          stats.min if stats and stats.has_min_max else None,
-                          stats.max if stats and stats.has_min_max else None)
+                          bool(stats and stats.has_min_max), lower, upper)
             batches = source.iter_batches(batch_size=65536, row_groups=[group_index],
                                           columns=[field.name], use_threads=False)
-            actual = observe((batch.column(0).to_pylist() for batch in batches),
-                             limit=MAX_ROWS)
+            chunks = ((batch.column(0).cast(tick_type).to_pylist() if temporal
+                       else batch.column(0).to_pylist()) for batch in batches)
+            actual = observe(chunks, limit=MAX_ROWS)
             result = compare(claim, actual)
             result.update(row_group=group_index, column=field.name, type=str(field.type))
+            if temporal:
+                result['comparison'] = {'representation': 'integer_ticks', 'unit': unit}
             results.append(result)
     violations = sum(len(r['violations']) for r in results)
     gaps = len(unchecked) + sum(len(r['unchecked']) for r in results)
