@@ -18,8 +18,10 @@ Output is one JSON object. Exit codes:
 | --- | --- | --- |
 | 0 | CONSISTENT | Every supported column/row-group claim checked agrees with the unfiltered scan, with no coverage gaps |
 | 1 | CONTRADICTED | At least one recorded bound excludes a decoded value, a recorded null count differs, or another checked claim contradicts the scan |
-| 2 | INVALID | The file could not be admitted, decoded, or handled within the supported layout |
+| 2 | INVALID or output failure | The file could not be admitted, decoded, or handled within the supported layout, or the complete report could not be written |
 | 3 | INCOMPLETE | No contradiction found, but some claims or types could not be checked |
+
+The CLI explicitly flushes its report. If stdout is closed, full or otherwise fails, it exits 2 and may produce no complete JSON report. It cannot retract bytes already accepted by a pipe or file. The callable `main(argv)` returns 2 without replacing or closing caller-owned streams; the console/module process runner also prevents a failed buffered write from being retried during interpreter shutdown. Argument-parser usage errors retain argparse behavior. Linux CPython output-failure behavior was tested with a closed pipe and `/dev/full`; no Windows claim is made.
 
 CONSISTENT is limited to these row-group claims. It is not a general Parquet validity certificate, proof of data provenance, or guarantee that filtered queries are safe.
 
