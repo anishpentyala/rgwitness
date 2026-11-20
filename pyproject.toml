@@ -12,7 +12,7 @@ license = {text = "MIT"}
 readme = "README.md"
 
 [project.scripts]
-rgwitness = "rgwitness.__main__:main"
+rgwitness = "rgwitness.__main__:entrypoint"
 
 [tool.setuptools.packages.find]
 include = ["rgwitness*"]
