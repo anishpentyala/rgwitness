@@ -1,0 +1,73 @@
+"""Experimental flat-scalar Parquet row-group claim audit."""
+import io
+from .core import Claim, compare, observe
+
+MAX_BYTES = 64 * 1024 * 1024
+MAX_ROWS = 2_000_000
+
+
+def audit_bytes(data: bytes) -> dict:
+    if not isinstance(data, bytes) or len(data) > MAX_BYTES:
+        raise ValueError('expected bytes, at most 64 MiB')
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    source = pq.ParquetFile(io.BytesIO(data))
+    metadata = source.metadata
+    if metadata.num_rows > MAX_ROWS:
+        raise ValueError('row budget exceeds 2,000,000')
+    schema = source.schema_arrow
+    names = schema.names
+    if len(schema) > 128 or metadata.num_row_groups * len(schema) > 4096:
+        raise ValueError('column or row-group budget exceeded')
+    if metadata.num_rows * len(schema) > 4_000_000:
+        raise ValueError('cell budget exceeds 4,000,000')
+    if len(set(names)) != len(names) or any('.' in n for n in names):
+        raise ValueError('duplicate or dotted field names are not supported')
+    results = []
+    unchecked = []
+    supported = lambda t: (pa.types.is_integer(t) or pa.types.is_boolean(t)
+                            or pa.types.is_string(t) or pa.types.is_binary(t)
+                            or pa.types.is_large_string(t)
+                            or pa.types.is_large_binary(t)
+                            or pa.types.is_decimal(t) or pa.types.is_date(t)
+                            or pa.types.is_time(t) or pa.types.is_timestamp(t))
+    flat = all(supported(field.type) or pa.types.is_floating(field.type)
+               or pa.types.is_null(field.type) for field in schema)
+    # A nested column changes the mapping from Arrow fields to Parquet leaves.
+    # Refuse the complete file rather than silently checking the wrong index.
+    if not flat or metadata.num_columns != len(schema):
+        raise ValueError('nested or unsupported physical layout')
+    if sum(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)) != metadata.num_rows:
+        raise ValueError('file and row-group row counts disagree')
+    for group_index in range(metadata.num_row_groups):
+        group = metadata.row_group(group_index)
+        if any(group.column(i).file_path for i in range(group.num_columns)):
+            raise ValueError('external column chunks are not supported')
+        for column_index, field in enumerate(schema):
+            if not supported(field.type):
+                unchecked.append({'row_group': group_index, 'column': field.name,
+                                  'reason': 'unsupported_type', 'type': str(field.type)})
+                continue
+            stats = group.column(column_index).statistics
+            claim = Claim(group.num_rows,
+                          stats.null_count if stats and stats.has_null_count else None,
+                          bool(stats and stats.has_min_max),
+                          stats.min if stats and stats.has_min_max else None,
+                          stats.max if stats and stats.has_min_max else None)
+            batches = source.iter_batches(batch_size=65536, row_groups=[group_index],
+                                          columns=[field.name], use_threads=False)
+            actual = observe((batch.column(0).to_pylist() for batch in batches),
+                             limit=MAX_ROWS)
+            result = compare(claim, actual)
+            result.update(row_group=group_index, column=field.name, type=str(field.type))
+            results.append(result)
+    violations = sum(len(r['violations']) for r in results)
+    gaps = len(unchecked) + sum(len(r['unchecked']) for r in results)
+    if not results:
+        gaps += 1
+    return {'format': 'rgwitness/experimental-v1',
+            'verdict': 'CONTRADICTED' if violations else 'INCOMPLETE' if gaps else 'CONSISTENT',
+            'rows': metadata.num_rows, 'row_groups': metadata.num_row_groups,
+            'checked_columns': len(results), 'violation_count': violations,
+            'unchecked_count': gaps, 'columns': results, 'unchecked': unchecked,
+            'scope': 'row-group bounds and null counts only; no page/index/bloom audit'}
