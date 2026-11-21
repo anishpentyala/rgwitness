@@ -11,7 +11,9 @@ from .report import json_report
 def _run(argv=None):
     parser = argparse.ArgumentParser(
         description='Check Parquet row-group bounds and null counts against unfiltered values.')
-    parser.add_argument('file', help='one local regular Parquet file, at most 64 MiB')
+    parser.add_argument('file', nargs='+', help='local regular Parquet files, at most 64 MiB each')
+    parser.add_argument('--batch', action='store_true',
+                        help='audit 1 to 32 explicit files and emit a combined manifest')
     parser.add_argument('--isolate', action='store_true',
                         help='audit in a child process (not a security sandbox)')
     parser.add_argument('--timeout', type=float, default=None,
@@ -19,6 +21,10 @@ def _run(argv=None):
     parser.add_argument('--memory-mib', type=int, default=None,
                         help='optional Linux worker address-space limit, in MiB')
     args = parser.parse_args(argv)
+    if not args.batch and len(args.file) != 1:
+        parser.error('multiple files require --batch')
+    if args.batch and len(args.file) > 32:
+        parser.error('batch requires 1 to 32 explicit file paths')
     if (args.timeout is not None or args.memory_mib is not None) and not args.isolate:
         parser.error('--timeout and --memory-mib require --isolate')
     if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
@@ -26,12 +32,16 @@ def _run(argv=None):
     if args.memory_mib is not None and (args.memory_mib <= 0 or sys.platform != 'linux'):
         parser.error('--memory-mib requires Linux and a positive MiB count')
     try:
-        if args.isolate:
+        if args.batch:
+            from .batch import audit_files
+            report = audit_files(args.file, isolate=args.isolate, timeout=args.timeout,
+                                 memory_mib=args.memory_mib)
+        elif args.isolate:
             from .worker import audit_in_worker
-            report = audit_in_worker(args.file, timeout=args.timeout or 30.0,
+            report = audit_in_worker(args.file[0], timeout=args.timeout or 30.0,
                                      memory_mib=args.memory_mib)
         else:
-            data = read_input(args.file)
+            data = read_input(args.file[0])
             report = json_report(audit_bytes(data))
     except Exception as exc:
         # Decoder errors are input failures, not a report with passing columns.
