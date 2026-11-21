@@ -7,7 +7,9 @@ MAX_BYTES = 64 * 1024 * 1024
 MAX_ROWS = 2_000_000
 
 
-def audit_bytes(data: bytes) -> dict:
+def audit_bytes(data: bytes, *, include_schema=False) -> dict:
+    if not isinstance(include_schema, bool):
+        raise ValueError('include_schema must be a boolean')
     if not isinstance(data, bytes) or len(data) > MAX_BYTES:
         raise ValueError('expected bytes, at most 64 MiB')
     import pyarrow as pa
@@ -124,7 +126,7 @@ def audit_bytes(data: bytes) -> dict:
     gaps = len(unchecked) + sum(len(r['unchecked']) for r in results)
     if not results:
         gaps += 1
-    return {'format': 'rgwitness/experimental-v1',
+    report = {'format': 'rgwitness/experimental-v1',
             'input_snapshot': {'byte_length': len(data),
                                'sha256': hashlib.sha256(data).hexdigest()},
             'verdict': 'CONTRADICTED' if violations else 'INCOMPLETE' if gaps else 'CONSISTENT',
@@ -134,3 +136,7 @@ def audit_bytes(data: bytes) -> dict:
             'scope': ('row-group bounds, null counts and supported float NaN counts only; no page/index/bloom audit'
                       if float_info is not None else
                       'row-group bounds and null counts only; no page/index/bloom audit')}
+    if include_schema:
+        from .schema import describe_schema
+        report['schema'] = describe_schema(schema)
+    return report
