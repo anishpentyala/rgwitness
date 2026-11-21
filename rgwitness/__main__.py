@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import sys
 from .audit import audit_bytes
@@ -11,10 +12,27 @@ def _run(argv=None):
     parser = argparse.ArgumentParser(
         description='Check Parquet row-group bounds and null counts against unfiltered values.')
     parser.add_argument('file', help='one local regular Parquet file, at most 64 MiB')
+    parser.add_argument('--isolate', action='store_true',
+                        help='audit in a child process (not a security sandbox)')
+    parser.add_argument('--timeout', type=float, default=None,
+                        help='worker wall-clock seconds; default 30 with --isolate')
+    parser.add_argument('--memory-mib', type=int, default=None,
+                        help='optional Linux worker address-space limit, in MiB')
     args = parser.parse_args(argv)
+    if (args.timeout is not None or args.memory_mib is not None) and not args.isolate:
+        parser.error('--timeout and --memory-mib require --isolate')
+    if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
+        parser.error('--timeout must be finite and positive')
+    if args.memory_mib is not None and (args.memory_mib <= 0 or sys.platform != 'linux'):
+        parser.error('--memory-mib requires Linux and a positive MiB count')
     try:
-        data = read_input(args.file)
-        report = json_report(audit_bytes(data))
+        if args.isolate:
+            from .worker import audit_in_worker
+            report = audit_in_worker(args.file, timeout=args.timeout or 30.0,
+                                     memory_mib=args.memory_mib)
+        else:
+            data = read_input(args.file)
+            report = json_report(audit_bytes(data))
     except Exception as exc:
         # Decoder errors are input failures, not a report with passing columns.
         report = {'verdict': 'INVALID', 'error': str(exc)}
