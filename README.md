@@ -74,7 +74,35 @@ A contradiction remains in its member report and in `verdict_counts` even when a
 
 The Python API `rgwitness.batch.audit_files(paths, isolate=False, timeout=None, memory_mib=None)` returns the same JSON-safe manifest and accepts an iterable of string paths or string-valued path objects. It consumes at most 33 entries before rejecting an over-limit iterable, before opening any input. Invalid API options raise before auditing. Each accepted member retains the existing single-file admission policies. Worker timeout and memory limits apply **per file**, not to the entire batch. All reports are retained in parent memory until output; this does not cap parent memory or report size. The warnings in "Opt-in worker budgets" still apply.
 
-This is a manifest of separate file audits, not an atomic dataset snapshot, a cross-file schema check or a guarantee about a query over the combined dataset. Existing single-file invocation and report shapes are unchanged. Batch behavior was validated on Linux CPython 3.10.12 with PyArrow 25.0.1 only.
+The default batch is a manifest of separate file audits, not an atomic dataset snapshot, a cross-file schema check or a guarantee about a query over the combined dataset. The optional exact schema contract below adds a separate equality check, not a combined-query guarantee. Existing single-file invocation and report shapes are unchanged. Batch behavior was validated on Linux CPython 3.10.12 with PyArrow 25.0.1 only.
+
+## Optional exact schema contract
+
+Require the interpreted schemas of an explicit batch to match:
+
+```sh
+rgwitness --batch --require-schema-match part-000.parquet part-001.parquet
+rgwitness --batch --require-schema-match --isolate --timeout 30 part-000.parquet part-001.parquet
+# Inspect the same descriptor for just one file:
+rgwitness --include-schema part-000.parquet
+```
+
+This is an opt-in equality contract, not schema inference or evolution compatibility. It compares the decoded Arrow schema's field order, names, logical types and nullability. Integer sign and width, decimal precision/scale/width, time units and timestamp timezones are distinct. Schema and field key/value metadata are excluded and are not copied into the report. The comparison uses structured type descriptions, not equality of formatted type names. It does not equate differently named timezone aliases or decide whether a type conversion is safe.
+
+Each completed member includes a `schema` object with format `rgwitness/schema-v1` and ordered `fields`. Every field contains `name`, `nullable` and a structured `type`. This descriptor and the row-group evidence come from the **same byte snapshot**, with the same `input_snapshot` identity. The path is not reopened to obtain the schema. PyArrow's interpretation, including stored Arrow schema information when applicable, remains part of the evidence. This is not an independent verification of physical schema annotations.
+
+The batch adds `schema_check`:
+
+- `reference_position` is the one-based position of the first completed audit, even if its row-group verdict is CONTRADICTED or INCOMPLETE. It is `null` if none completes.
+- `comparisons` records every later completed member's position and its `differences` against that reference. Each difference gives a zero-based `field_position`, a `property` (`name`, `type`, `nullable` or an absent/extra whole `field`), and the `reference` and `actual` values. An empty difference list means exact equality within this contract. Reordered fields are compared by position, not silently aligned by name.
+- `unavailable_positions` lists members without completed schema evidence, including invalid inputs and worker timeouts. They are not treated as equal or omitted from coverage.
+- The schema verdict is CONTRADICTED if any available schema differs, INCOMPLETE if no difference is found but any member is unavailable, and CONSISTENT otherwise. A single completed member has no peer comparisons; its CONSISTENT schema verdict only means no mismatch was found in that one-member batch. An all-unavailable batch has an INCOMPLETE schema verdict and no reference.
+
+The overall batch verdict uses the same priority across member and schema verdicts: INVALID, then CONTRADICTED, then INCOMPLETE, then CONSISTENT. Thus two individually CONSISTENT files with different schemas yield exit 1. An INVALID member still makes the overall batch INVALID, while an available schema mismatch remains visible in `schema_check`. `verdict_counts` continues to count **file audit verdicts only**, so a schema mismatch can make the overall verdict CONTRADICTED while its CONTRADICTED file count is zero. Existing single-file and batch reports are unchanged unless a new flag is selected.
+
+API equivalents are `audit_bytes(data, include_schema=True)`, `audit_in_worker(path, include_schema=True)` and `audit_files(paths, require_schema_match=True)`. The booleans must be actual `bool` values. `--require-schema-match` requires `--batch`; `--include-schema` is a single-file option. The batch's schema option includes per-member descriptors automatically. Worker containment, admission limits and per-file budgets are unchanged. Each member remains a separate snapshot; schema equality does not prove that the files were captured together, share data provenance, have compatible row contents, or form a correct combined query result. No schema merging, coercion, repair, directory discovery or additional files are read.
+
+This addition passed the complete suite on Linux CPython 3.10, 3.11 and 3.12 with PyArrow 25.0.1. On CPython 3.14, the 17 new schema tests passed, but the full suite retained a pre-existing closed-stream failure during argparse color detection, reproduced on the unchanged base. No full Python 3.14 compatibility claim is made. Tests compare 200 seeded schema pairs against Arrow's native structural equality, cover each reported difference category, retain statistics contradictions and gaps separately, verify snapshot replacement/duplicate-path behavior, compare direct and isolated reports, and check unavailable members, timeouts and malformed worker schema output.
 
 ## What is checked
 
