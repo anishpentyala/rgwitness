@@ -1,6 +1,6 @@
 # rgwitness
 
-Check Parquet row-group min/max bounds and null counts against the values actually decoded without filters. A file can be readable, and have min <= max, yet lose rows when a query engine uses incorrect footer statistics to skip data.
+Check Parquet row-group min/max bounds and null counts against the values actually decoded without filters. For supported float storage, also compare present NaN counts. A file can be readable, and have min <= max, yet lose rows when a query engine uses incorrect footer statistics to skip data.
 
 This is an experimental, read-only audit for local files. It does not repair files, run SQL, or claim that a query engine is correct.
 
@@ -39,7 +39,7 @@ A synthetic column contains `[10, 20, null]`, but its footer claims a minimum of
 
 The full report identifies row group 0, column `x`, and `lower_excludes_value`, with the claimed and observed bounds. The tests create this example by changing only the footer bytes of a real Parquet fixture, then verify the decoded rows are unchanged.
 
-Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"integer","value":"18446744073709551615"}`. Temporal bounds and observations use exact integer ticks, with a `comparison` object recording the representation and unit (`days`, `ms`, `us` or `ns`). This avoids truncating nanoseconds through Python datetime values and does not depend on pandas. Decimal and binary bounds also have lossless representations. Counts remain JSON integers. The Python API `audit_bytes(data)` returns native scalar values, with integer ticks for temporal columns; `rgwitness.report.json_report` prepares the JSON-safe form without changing comparison evidence.
+Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"integer","value":"18446744073709551615"}`. Temporal bounds and observations use exact integer ticks, with a `comparison` object recording the representation and unit (`days`, `ms`, `us` or `ns`). This avoids truncating nanoseconds through Python datetime values and does not depend on pandas. Decimal and binary bounds also have lossless representations. Float report bounds use a tagged `float64` little-endian hex encoding of the Python comparison value, including infinities and signed zero, instead of nonstandard JSON `NaN` or `Infinity`. Float claims also retain their original stored bound bytes as `lower_raw_hex` and `upper_raw_hex`; `comparison.physical_width` distinguishes FLOAT from DOUBLE. A widened Python value is not a claim that decoded float32 NaN payload bits were preserved. Counts remain JSON integers. The Python API `audit_bytes(data)` returns native scalar values, with integer ticks for temporal columns; `rgwitness.report.json_report` prepares the JSON-safe form without changing comparison evidence.
 
 ## What is checked
 
@@ -56,13 +56,25 @@ The reader is PyArrow's `ParquetFile.iter_batches`, with explicit row groups and
 
 The original implementation could silently report false CONSISTENT for time64 nanosecond bounds within one microsecond when pandas was installed. Without pandas, PyArrow 25.0.1 failed loudly on the original temporal conversion path with INVALID (exit 2), rather than producing that silent false verdict. Temporal comparisons now use raw stored bounds and decoded integer ticks, avoiding that conversion dependency. This correction was validated on Linux CPython with PyArrow 25.0.1 only; no wider runtime or platform compatibility is claimed.
 
+## Float coverage
+
+Flat FLOAT and DOUBLE columns with an explicit `TYPE_ORDER` are compared against unfiltered decoded values. NaNs are counted separately and excluded from extrema. Signed zeros compare equal under the format's compatibility rules, so a stored +0 minimum does not exclude -0, and a stored -0 maximum does not exclude +0. This does not implement IEEE 754 total order.
+
+A present `nan_count` is checked, including an explicit zero. Missing `nan_count` always leaves INCOMPLETE unless another checked claim is contradicted. PyArrow 25.0.1's writer omitted this field in the fixtures tested here, even for NaN-free input. Ordinary files from that writer therefore remain INCOMPLETE; this addition does not silently certify them. Finite bounds that exclude decoded non-NaN values can still be reported as contradictions when the count is missing.
+
+Missing bounds with non-NaN values leave gaps. NaN bounds are ignored and leave an explicit gap, rather than being used in numeric comparisons. An all-NaN or all-null group with accurate counts and no bounds can be CONSISTENT within this scope. Missing/unknown column order, `IEEE_754_TOTAL_ORDER`, and FLOAT16 storage remain unchecked. There is no NaN-payload-order, page-statistics or writer-conformance audit. Bound containment accepts compatible signed zeros even when a writer did not choose the recommended zero sign.
+
+Float metadata comes from a small bounded Compact Thrift footer reader because the installed PyArrow metadata API does not expose NaN counts or column order. Raw evidence is checked against the decoder's group count, column count, physical type, column path and declared number of values before use. The data scan and its interpretation still depend on PyArrow. The reader is not an independent Parquet data-page decoder.
+
+The comparison rules follow the [Parquet format statistics and column-order definitions](https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift). Footer encoding follows [Apache Thrift Compact Protocol](https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md).
+
 ## Scope and limits
 
-Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder. Temporal comparisons use raw stored bounds and integer-cast decoded ticks. An unexpected temporal physical storage type is unchecked rather than compared in mismatched units. Float and null-type columns are reported as unchecked, so a mixed file cannot silently receive CONSISTENT. Floating point NaN and signed-zero ordering require a separate design and are deliberately excluded.
+Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder, plus the restricted float coverage above. Temporal comparisons use raw stored bounds and integer-cast decoded ticks. An unexpected temporal physical storage type is unchecked rather than compared in mismatched units. Null-type columns remain unchecked, so a mixed file cannot silently receive CONSISTENT.
 
 Nested layouts, duplicate field names, dotted field names and external column chunks are refused. The dotted-name restriction avoids ambiguity in reader column projection. No page-statistics, column-index, bloom-filter, checksum, encoding, sort-order or schema-evolution audit is claimed. A decoder's interpretation and row boundaries are still part of the evidence, not independently verified format parsing.
 
-Admission policies: one regular local file, at most 64 MiB; at most 2,000,000 declared rows, 128 columns, 4,000,000 declared cells and 4,096 row-group/column pairs. The file is read into a bounded byte snapshot before parsing. Reads use nonblocking open where supported to refuse writerless FIFOs rather than wait on them. These limits are policy, not Parquet format limits. This is not a hostile-file sandbox, a decompression budget, a filesystem timeout or a memory/time guarantee. Do not use it on untrusted files without process isolation.
+Admission policies: one regular local file, at most 64 MiB; at most 2,000,000 declared rows, 128 columns, 4,000,000 declared cells and 4,096 row-group/column pairs. The file is read into a bounded byte snapshot before parsing. Reads use nonblocking open where supported to refuse writerless FIFOs rather than wait on them. These limits are policy, not Parquet format limits. Files with float columns also have a 1 MiB footer limit, a 100,000-value Compact parsing budget and a nesting-depth limit of 32; even fields not used for comparison consume that budget. The footer reader refuses malformed fields, duplicate/nonpositive field IDs, overflow, trailing data and unsupported Compact types. These are admission policies, not universal format-validity judgments, and can reject files admitted by earlier releases. PyArrow reads metadata before these extra checks, so the new limits do not bound its initial parsing. This is not a hostile-file sandbox, a decompression budget, a filesystem timeout or a memory/time guarantee. Do not use it on untrusted files without process isolation.
 
 Validated locally on Linux CPython 3.10.12 with PyArrow 25.0.1. Other Python versions, operating systems and PyArrow versions have not yet been validated. The dependency range is deliberately narrow, not a compatibility claim for every release in it.
 
@@ -82,5 +94,7 @@ python -m unittest discover -s tests -v
 ```
 
 Tests include real altered-footer bounds/null counts with unchanged decoded data, sub-microsecond time bounds that Python datetime values would truncate, exact temporal unit checks, conservative bounds, missing statistics, all-null inputs, multiple row groups, multiple batches, supported type families, exact JSON large integers, strict exit codes, writerless FIFO refusal on POSIX, and a deterministic 500-case comparison oracle.
+
+Fixed real float controls in `tests/float_cases.py` were generated with PyArrow 25.0.1 and rewritten by an independent Apache Thrift 0.22.0 reader/writer, not the production footer reader. The original Parquet bytes are stored as base64 text constants and decoded in memory at test time, without changing the fixtures. The embedded manifest records expected verdicts and decoded physical-width bits. Tests verify decoded values are unchanged, including valid, narrow/wide bounds, NaN/null counts, all-NaN/all-null groups, infinities, signed zeros, partial bounds and unsupported orders. Fixture maintenance only: with `thrift==0.22.0` installed in a separate development environment, run `python tests/generate_float_fixtures.py`. Apache Thrift is not a runtime or ordinary test dependency.
 
 MIT license. No telemetry or network access is implemented by rgwitness.
