@@ -1,4 +1,5 @@
 """Experimental flat-scalar Parquet row-group claim audit."""
+import hashlib
 import io
 from .core import Claim, compare, observe
 
@@ -124,6 +125,8 @@ def audit_bytes(data: bytes) -> dict:
     if not results:
         gaps += 1
     return {'format': 'rgwitness/experimental-v1',
+            'input_snapshot': {'byte_length': len(data),
+                               'sha256': hashlib.sha256(data).hexdigest()},
             'verdict': 'CONTRADICTED' if violations else 'INCOMPLETE' if gaps else 'CONSISTENT',
             'rows': metadata.num_rows, 'row_groups': metadata.num_row_groups,
             'checked_columns': len(results), 'violation_count': violations,
