@@ -47,6 +47,35 @@ Every completed audit report includes `input_snapshot.byte_length` and `input_sn
 
 Keep the identity with the report to match it to an input later, for example using `sha256sum input.parquet`. The file at that path might have changed since the audit; the report identifies the bytes read, not a continuing claim about the path. No pathname is added to the report. An INVALID error report has no snapshot identity. The digest is not a signature, a proof of origin, an independent decoder check or a stronger audit verdict.
 
+## Explicit-file batch manifests
+
+Audit a dataset split across several local files without losing a failed member:
+
+```sh
+rgwitness --batch part-000.parquet part-001.parquet part-002.parquet
+# Apply the worker budget separately to each file:
+rgwitness --batch --isolate --timeout 30 part-000.parquet part-001.parquet
+```
+
+`--batch` accepts 1 to 32 explicit file arguments. It emits one `rgwitness/batch-v1` JSON object with `file_count`, `verdict_counts` and a `files` list. Each entry has a one-based `position`, the `path` exactly as supplied and the complete ordinary single-file `report`, including snapshot identity when the audit completes. Unlike ordinary single-file reports, a batch manifest **contains input paths**. Review those paths before sharing it.
+
+Files are audited sequentially in argument order. An unreadable or invalid input gets an INVALID entry; later files are still attempted. Duplicate paths are separate reads, not cached or deduplicated, so they can have different snapshot identities if the file changes. There is no directory crawl, sorting, tilde expansion or glob expansion inside rgwitness. Your shell may expand `*.parquet` before invoking it; use quotes for a literal filename. Use `--` before filenames that start with a dash.
+
+The batch verdict and exit code use this precedence, regardless of argument order:
+
+| Condition | Batch verdict | Exit |
+| --- | --- | --- |
+| Any member is INVALID | INVALID | 2 |
+| No INVALID, at least one CONTRADICTED | CONTRADICTED | 1 |
+| Neither above, at least one INCOMPLETE | INCOMPLETE | 3 |
+| Every member is CONSISTENT | CONSISTENT | 0 |
+
+A contradiction remains in its member report and in `verdict_counts` even when an invalid member makes the overall verdict INVALID. Empty batches, too many arguments and multiple files without `--batch` are usage errors. Output failures still exit 2; bytes already written cannot be retracted. Interrupting a batch before its final output does not emit a partial success manifest.
+
+The Python API `rgwitness.batch.audit_files(paths, isolate=False, timeout=None, memory_mib=None)` returns the same JSON-safe manifest and accepts an iterable of string paths or string-valued path objects. It consumes at most 33 entries before rejecting an over-limit iterable, before opening any input. Invalid API options raise before auditing. Each accepted member retains the existing single-file admission policies. Worker timeout and memory limits apply **per file**, not to the entire batch. All reports are retained in parent memory until output; this does not cap parent memory or report size. The warnings in "Opt-in worker budgets" still apply.
+
+This is a manifest of separate file audits, not an atomic dataset snapshot, a cross-file schema check or a guarantee about a query over the combined dataset. Existing single-file invocation and report shapes are unchanged. Batch behavior was validated on Linux CPython 3.10.12 with PyArrow 25.0.1 only.
+
 ## What is checked
 
 - Each row group's declared row count against its unfiltered decoded count.
