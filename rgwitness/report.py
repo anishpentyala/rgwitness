@@ -1,11 +1,14 @@
 """Stable, lossless scalar representations for JSON reports."""
 import datetime
 import decimal
+import struct
 
 
 def scalar(value):
     if value is None or isinstance(value, (str, bool)):
         return value
+    if isinstance(value, float):
+        return {'kind': 'float64', 'little_endian_hex': struct.pack('<d', value).hex()}
     if isinstance(value, int):
         return {'kind': 'integer', 'value': str(value)}
     if isinstance(value, decimal.Decimal):

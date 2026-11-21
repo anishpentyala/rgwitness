@@ -159,7 +159,8 @@ class AdditionalTests(unittest.TestCase):
         pq.write_table(pa.table({'x': [1,2], 'y':[1.0,2.0]}), output)
         result = audit_bytes(output.getvalue())
         self.assertEqual(result['verdict'],'INCOMPLETE')
-        self.assertEqual(result['checked_columns'],1)
+        self.assertEqual(result['checked_columns'],2)
+        self.assertEqual(result['columns'][1]['unchecked'], ['nan_count_missing'])
 
 
 if __name__ == '__main__':

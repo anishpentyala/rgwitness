@@ -39,11 +39,47 @@ def audit_bytes(data: bytes) -> dict:
         raise ValueError('nested or unsupported physical layout')
     if sum(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)) != metadata.num_rows:
         raise ValueError('file and row-group row counts disagree')
+    float_info = None
+    if any(pa.types.is_floating(field.type) for field in schema):
+        from .footer import float_evidence
+        float_info = float_evidence(data)
+        if len(float_info['row_groups']) != metadata.num_row_groups:
+            raise ValueError('footer row-group evidence disagrees with decoder')
+        orders = float_info['orders']
+        if orders is not None and len(orders) != len(schema):
+            raise ValueError('footer column-order evidence disagrees with schema')
     for group_index in range(metadata.num_row_groups):
         group = metadata.row_group(group_index)
         if any(group.column(i).file_path for i in range(group.num_columns)):
             raise ValueError('external column chunks are not supported')
+        if float_info is not None and len(float_info['row_groups'][group_index]) != group.num_columns:
+            raise ValueError('footer column evidence disagrees with decoder')
         for column_index, field in enumerate(schema):
+            if pa.types.is_floating(field.type):
+                order = None if orders is None else orders[column_index]
+                if field.type.bit_width not in (32, 64):
+                    unchecked.append({'row_group': group_index, 'column': field.name,
+                                      'reason': 'unsupported_float_storage', 'type': str(field.type)})
+                    continue
+                if order != 1:
+                    unchecked.append({'row_group': group_index, 'column': field.name,
+                                      'reason': 'unsupported_float_order', 'type': str(field.type)})
+                    continue
+                from .floats import compare_float
+                evidence = float_info['row_groups'][group_index][column_index]
+                width = field.type.bit_width
+                expected_physical = 4 if width == 32 else 5
+                if (width not in (32, 64) or evidence['physical_type'] != expected_physical
+                        or evidence['num_values'] != group.num_rows
+                        or evidence['path'] != [field.name.encode('utf-8')]):
+                    raise ValueError('float evidence and decoded schema disagree')
+                batches = source.iter_batches(batch_size=65536, row_groups=[group_index],
+                                              columns=[field.name], use_threads=False)
+                result = compare_float(evidence, (batch.column(0).to_pylist() for batch in batches),
+                                       width=width, limit=MAX_ROWS)
+                result.update(row_group=group_index, column=field.name, type=str(field.type))
+                results.append(result)
+                continue
             if not supported(field.type):
                 unchecked.append({'row_group': group_index, 'column': field.name,
                                   'reason': 'unsupported_type', 'type': str(field.type)})
@@ -92,4 +128,6 @@ def audit_bytes(data: bytes) -> dict:
             'rows': metadata.num_rows, 'row_groups': metadata.num_row_groups,
             'checked_columns': len(results), 'violation_count': violations,
             'unchecked_count': gaps, 'columns': results, 'unchecked': unchecked,
-            'scope': 'row-group bounds and null counts only; no page/index/bloom audit'}
+            'scope': ('row-group bounds, null counts and supported float NaN counts only; no page/index/bloom audit'
+                      if float_info is not None else
+                      'row-group bounds and null counts only; no page/index/bloom audit')}

@@ -93,7 +93,8 @@ class FileTests(unittest.TestCase):
     def test_float_not_certified(self):
         report = audit_bytes(fixture([1.0, float('nan')], pa.float64()))
         self.assertEqual(report['verdict'], 'INCOMPLETE')
-        self.assertEqual(report['checked_columns'], 0)
+        self.assertEqual(report['checked_columns'], 1)
+        self.assertIn('nan_count_missing', report['columns'][0]['unchecked'])
 
     def test_strings(self):
         self.assertEqual(audit_bytes(fixture(['a', 'z', None], pa.string()))['verdict'], 'CONSISTENT')
