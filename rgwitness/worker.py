@@ -8,8 +8,10 @@ import sys
 CODES = {'CONSISTENT': 0, 'CONTRADICTED': 1, 'INVALID': 2, 'INCOMPLETE': 3}
 
 
-def audit_in_worker(path, *, timeout=30.0, memory_mib=None):
+def audit_in_worker(path, *, timeout=30.0, memory_mib=None, include_schema=False):
     """Return a complete worker report or INVALID, never partial evidence."""
+    if not isinstance(include_schema, bool):
+        raise ValueError('include_schema must be a boolean')
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('timeout must be finite and positive')
     if memory_mib is not None:
@@ -20,6 +22,8 @@ def audit_in_worker(path, *, timeout=30.0, memory_mib=None):
     command = [sys.executable, '-m', 'rgwitness._worker', str(path)]
     if memory_mib is not None:
         command.append(str(memory_mib))
+    if include_schema:
+        command.append('--include-schema')
     try:
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=timeout, check=False)
@@ -34,6 +38,10 @@ def audit_in_worker(path, *, timeout=30.0, memory_mib=None):
         if (not isinstance(report, dict) or report.get('verdict') not in CODES
                 or CODES[report['verdict']] != result.returncode):
             raise ValueError('worker status mismatch')
+        if include_schema and report['verdict'] != 'INVALID':
+            from .schema import valid_schema
+            if not valid_schema(report.get('schema')):
+                raise ValueError('worker schema missing or malformed')
     except (ValueError, TypeError, UnicodeError):
         return {'verdict': 'INVALID', 'error': 'audit worker returned an invalid report'}
     return report
