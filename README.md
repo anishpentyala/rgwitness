@@ -41,6 +41,12 @@ The full report identifies row group 0, column `x`, and `lower_excludes_value`, 
 
 Large integer bounds use tagged decimal strings in JSON, for example `{"kind":"integer","value":"18446744073709551615"}`. Temporal bounds and observations use exact integer ticks, with a `comparison` object recording the representation and unit (`days`, `ms`, `us` or `ns`). This avoids truncating nanoseconds through Python datetime values and does not depend on pandas. Decimal and binary bounds also have lossless representations. Float report bounds use a tagged `float64` little-endian hex encoding of the Python comparison value, including infinities and signed zero, instead of nonstandard JSON `NaN` or `Infinity`. Float claims also retain their original stored bound bytes as `lower_raw_hex` and `upper_raw_hex`; `comparison.physical_width` distinguishes FLOAT from DOUBLE. A widened Python value is not a claim that decoded float32 NaN payload bits were preserved. Counts remain JSON integers. The Python API `audit_bytes(data)` returns native scalar values, with integer ticks for temporal columns; `rgwitness.report.json_report` prepares the JSON-safe form without changing comparison evidence.
 
+## Input snapshot identity
+
+Every completed audit report includes `input_snapshot.byte_length` and `input_snapshot.sha256`, the lowercase SHA-256 hex digest of the exact byte snapshot passed to the decoder, including its footer. The Python API, ordinary CLI and isolated worker produce the same identity. Renaming a file does not change it. Changing only a footer claim does, even if every decoded value remains the same.
+
+Keep the identity with the report to match it to an input later, for example using `sha256sum input.parquet`. The file at that path might have changed since the audit; the report identifies the bytes read, not a continuing claim about the path. No pathname is added to the report. An INVALID error report has no snapshot identity. The digest is not a signature, a proof of origin, an independent decoder check or a stronger audit verdict.
+
 ## What is checked
 
 - Each row group's declared row count against its unfiltered decoded count.
