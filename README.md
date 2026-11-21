@@ -78,6 +78,24 @@ Admission policies: one regular local file, at most 64 MiB; at most 2,000,000 de
 
 Validated locally on Linux CPython 3.10.12 with PyArrow 25.0.1. Other Python versions, operating systems and PyArrow versions have not yet been validated. The dependency range is deliberately narrow, not a compatibility claim for every release in it.
 
+## Opt-in worker budgets
+
+The CLI can run the complete input read, native decoder import and audit in a child process:
+
+```sh
+rgwitness input.parquet --isolate --timeout 30
+# Linux only: also cap the child's virtual address space at 4 GiB
+rgwitness input.parquet --isolate --timeout 30 --memory-mib 4096
+```
+
+`--isolate` defaults to a 30-second wall-clock timeout. A timeout kills and reaps the direct child, discards any partial output and reports INVALID (exit 2). A crash, failed startup, malformed report or mismatched report/exit status also cannot produce a passing verdict. Complete reports retain the same JSON shape and exit codes as the in-process mode. The Python `audit_bytes` API and default CLI mode are unchanged.
+
+`--memory-mib` applies Linux `RLIMIT_AS` before importing PyArrow. It limits virtual address space, not measured resident memory or a whole process tree. A lower inherited hard limit remains in force. Native libraries can reserve large mappings, so a budget that looks generous for a small file may still prevent imports. A budget failure can yield a generic INVALID error rather than a precise out-of-memory diagnosis. Other platforms reject this option rather than silently ignore it. Timeout values must be finite and positive; both budget options require `--isolate`.
+
+This is process containment for accidental decoder stalls and address-space growth, **not a security sandbox**. The child inherits the caller's permissions, environment, working directory and filesystem/network access. There is no privilege boundary, syscall filter, descendant-process containment or global resource guarantee. The parent captures the child's report in memory; these options do not cap parent memory or all I/O. A parent timeout cannot guarantee interruption of an uninterruptible kernel wait. Do not use this mode as permission to open hostile files. Use an OS/container sandbox with separate resource and access controls for that purpose.
+
+Worker behavior was tested on Linux CPython 3.10.12 with PyArrow 25.0.1: matching valid/contradicted/incomplete/invalid reports, real timed-out and killed children, rejection of partial pass output, generous/low address-space controls, and final stdout failure. No Windows/macOS worker or resource-limit compatibility is claimed.
+
 ## Related tools and outside evidence
 
 - [Polars issue 16683](https://github.com/pola-rs/polars/issues/16683) records incorrect UInt64 statistics causing silent row-group pruning. It is evidence of the failure class, not a claim of a current Polars defect.
