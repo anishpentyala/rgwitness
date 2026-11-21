@@ -4,14 +4,18 @@ import sys
 
 
 def main():
-    if len(sys.argv) not in (2, 3):
+    include_schema = len(sys.argv) > 2 and sys.argv[-1] == '--include-schema'
+    arguments = sys.argv[1:]
+    if include_schema:
+        arguments.pop()
+    if len(arguments) not in (1, 2):
         return 2
-    if len(sys.argv) == 3:
+    if len(arguments) == 2:
         try:
             if sys.platform != 'linux':
                 return 2
             import resource
-            limit = int(sys.argv[2]) * 1024 * 1024
+            limit = int(arguments[1]) * 1024 * 1024
             if limit <= 0:
                 return 2
             _, hard = resource.getrlimit(resource.RLIMIT_AS)
@@ -26,7 +30,7 @@ def main():
         import resource
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     from .__main__ import entrypoint
-    sys.argv = [sys.argv[0], '--', sys.argv[1]]
+    sys.argv = [sys.argv[0]] + (['--include-schema'] if include_schema else []) + ['--', arguments[0]]
     return entrypoint()
 
 
