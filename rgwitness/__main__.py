@@ -1,4 +1,6 @@
 import argparse
+import functools
+import inspect
 import json
 import math
 import os
@@ -8,9 +10,23 @@ from .input import read_input
 from .report import json_report
 
 
+def _parser_options():
+    # A closed caller stream cannot be probed for terminal color support.
+    # Python versions differ in which argparse constructors accept color.
+    if not getattr(sys.stdout, 'closed', False):
+        return {}
+    options = {}
+    if 'color' in inspect.signature(argparse.ArgumentParser).parameters:
+        options['color'] = False
+    if 'color' in inspect.signature(argparse.HelpFormatter).parameters:
+        options['formatter_class'] = functools.partial(argparse.HelpFormatter, color=False)
+    return options
+
+
 def _run(argv=None):
     parser = argparse.ArgumentParser(
-        description='Check Parquet row-group bounds and null counts against unfiltered values.')
+        description='Check Parquet row-group bounds and null counts against unfiltered values.',
+        **_parser_options())
     parser.add_argument('file', nargs='+', help='local regular Parquet files, at most 64 MiB each')
     parser.add_argument('--batch', action='store_true',
                         help='audit 1 to 32 explicit files and emit a combined manifest')
