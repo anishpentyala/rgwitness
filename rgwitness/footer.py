@@ -1,7 +1,7 @@
-"""Private prototype: bounded Compact Thrift footer evidence, not a decoder.
+"""Bounded Compact Thrift footer evidence, not a data-page decoder.
 
-Only float order and statistics are consumed. Unknown orders are returned as
-unknown, never treated as a supported comparison. Admission limits are new.
+Orders, bounds, counts and schema annotations are consumed for floats and fixed-size binary.
+Unknown orders stay unknown. Parsing has explicit admission limits.
 """
 import struct
 
@@ -140,7 +140,7 @@ def _struct_list(obj, number, default=None):
 
 
 def float_evidence(data):
-    """Return order identifiers and raw per-column float evidence.
+    """Return orders, physical schema and raw per-column bound/count evidence.
 
     Missing and unknown fields stay distinct from an explicit zero or known
     order. This does not establish schema alignment with a decoder by itself.
@@ -176,4 +176,13 @@ def float_evidence(data):
                         'lower': _field(stats, 6, 8),
                         'upper': _field(stats, 5, 8)})
         evidence.append(row)
-    return {'orders': orders, 'row_groups': evidence}
+    schema = _struct_list(footer, 2)
+    if schema is not None:
+        schema = [{'physical_type': _field(element, 1, 5),
+                   'type_length': _field(element, 2, 5),
+                   'name': _field(element, 4, 8),
+                   'num_children': _field(element, 5, 5),
+                   'converted_type': _field(element, 6, 5),
+                   'logical_type_present': _field(element, 10, 12) is not None}
+                  for element in schema]
+    return {'orders': orders, 'row_groups': evidence, 'schema': schema}
