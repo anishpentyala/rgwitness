@@ -14,6 +14,8 @@ def describe_schema(schema):
                 raise ValueError('unsupported schema contract type')
             return {'kind': 'dictionary', 'index_type': describe_type(kind.index_type),
                     'value_type': describe_type(kind.value_type), 'ordered': kind.ordered}
+        if pa.types.is_fixed_size_binary(kind):
+            return {'kind': 'fixed_size_binary', 'byte_width': kind.byte_width}
         if pa.types.is_floating(kind):
             return {'kind': 'float', 'bits': kind.bit_width}
         if pa.types.is_decimal(kind):
@@ -123,6 +125,10 @@ def valid_schema(schema):
                     or not isinstance(kind['value_type'], dict)
                     or set(kind['value_type']) != {'kind'}
                     or kind['value_type']['kind'] not in ('string', 'binary')):
+                return False
+        elif name == 'fixed_size_binary':
+            if (keys != {'kind', 'byte_width'} or type(kind['byte_width']) is not int
+                    or not 1 <= kind['byte_width'] <= 2**31 - 1):
                 return False
         elif name == 'float':
             if (keys != {'kind', 'bits'} or type(kind['bits']) is not int

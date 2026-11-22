@@ -32,6 +32,7 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
                             or pa.types.is_string(t) or pa.types.is_binary(t)
                             or pa.types.is_large_string(t)
                             or pa.types.is_large_binary(t)
+                            or pa.types.is_fixed_size_binary(t)
                             or pa.types.is_decimal(t) or pa.types.is_date(t)
                             or pa.types.is_time(t) or pa.types.is_timestamp(t)
                             or (pa.types.is_dictionary(t)
@@ -45,20 +46,29 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
         raise ValueError('nested or unsupported physical layout')
     if sum(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)) != metadata.num_rows:
         raise ValueError('file and row-group row counts disagree')
-    float_info = None
-    if any(pa.types.is_floating(field.type) for field in schema):
+    footer_info = None
+    has_floats = any(pa.types.is_floating(field.type) for field in schema)
+    has_fixed_binary = any(pa.types.is_fixed_size_binary(field.type) for field in schema)
+    if has_floats or has_fixed_binary:
+        # The existing bounded reader also exposes fixed-byte column orders.
         from .footer import float_evidence
-        float_info = float_evidence(data)
-        if len(float_info['row_groups']) != metadata.num_row_groups:
+        footer_info = float_evidence(data)
+        if len(footer_info['row_groups']) != metadata.num_row_groups:
             raise ValueError('footer row-group evidence disagrees with decoder')
-        orders = float_info['orders']
+        orders = footer_info['orders']
         if orders is not None and len(orders) != len(schema):
             raise ValueError('footer column-order evidence disagrees with schema')
+        if has_fixed_binary:
+            physical_schema = footer_info['schema']
+            if (physical_schema is None or len(physical_schema) != len(schema) + 1
+                    or physical_schema[0]['physical_type'] is not None
+                    or physical_schema[0]['num_children'] != len(schema)):
+                raise ValueError('fixed binary requires an aligned flat physical schema')
     for group_index in range(metadata.num_row_groups):
         group = metadata.row_group(group_index)
         if any(group.column(i).file_path for i in range(group.num_columns)):
             raise ValueError('external column chunks are not supported')
-        if float_info is not None and len(float_info['row_groups'][group_index]) != group.num_columns:
+        if footer_info is not None and len(footer_info['row_groups'][group_index]) != group.num_columns:
             raise ValueError('footer column evidence disagrees with decoder')
         for column_index, field in enumerate(schema):
             if pa.types.is_floating(field.type):
@@ -72,7 +82,7 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
                                       'reason': 'unsupported_float_order', 'type': str(field.type)})
                     continue
                 from .floats import compare_float
-                evidence = float_info['row_groups'][group_index][column_index]
+                evidence = footer_info['row_groups'][group_index][column_index]
                 width = field.type.bit_width
                 expected_physical = 4 if width == 32 else 5
                 if (width not in (32, 64) or evidence['physical_type'] != expected_physical
@@ -92,11 +102,43 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
                 continue
             temporal = (pa.types.is_date(field.type) or pa.types.is_time(field.type)
                         or pa.types.is_timestamp(field.type))
-            stats = group.column(column_index).statistics
-            # Python datetime.time has only microsecond resolution. Compare
-            # temporal values as integer ticks, never through to_pylist's
-            # potentially lossy datetime conversion (notably TIME_NANOS).
-            if temporal:
+            fixed_binary = pa.types.is_fixed_size_binary(field.type)
+            # Fixed-byte bounds are validated from raw evidence, without asking
+            # PyArrow to construct native statistics for malformed byte lengths.
+            stats = None if fixed_binary else group.column(column_index).statistics
+            if fixed_binary:
+                physical_field = physical_schema[column_index + 1]
+                if (physical_field['physical_type'] != 7
+                        or physical_field['type_length'] != field.type.byte_width
+                        or physical_field['name'] != field.name.encode('utf-8')
+                        or physical_field['num_children'] not in (None, 0)):
+                    raise ValueError('fixed binary physical schema and decoded field disagree')
+                if (physical_field['converted_type'] is not None
+                        or physical_field['logical_type_present']):
+                    unchecked.append({'row_group': group_index, 'column': field.name,
+                                      'reason': 'unsupported_fixed_binary_annotation',
+                                      'type': str(field.type),
+                                      'annotation': {'converted_type': physical_field['converted_type'],
+                                          'logical_type_present': physical_field['logical_type_present']}})
+                    continue
+                order = None if orders is None else orders[column_index]
+                if order != 1:
+                    unchecked.append({'row_group': group_index, 'column': field.name,
+                                      'reason': 'unsupported_fixed_binary_order',
+                                      'type': str(field.type)})
+                    continue
+                evidence = footer_info['row_groups'][group_index][column_index]
+                if (evidence['physical_type'] != 7
+                        or evidence['num_values'] != group.num_rows
+                        or evidence['path'] != [field.name.encode('utf-8')]):
+                    raise ValueError('fixed binary evidence and decoded schema disagree')
+                lower, upper = evidence['lower'], evidence['upper']
+                if any(bound is not None and len(bound) != field.type.byte_width
+                       for bound in (lower, upper)):
+                    raise ValueError('fixed binary bound width disagrees with schema')
+            elif temporal:
+                # Python datetime.time has only microsecond resolution. Use
+                # integer ticks, never a potentially lossy to_pylist conversion.
                 physical = group.column(column_index).physical_type
                 expected = ('INT32' if pa.types.is_date32(field.type)
                             or pa.types.is_time32(field.type) else 'INT64')
@@ -113,8 +155,10 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
                 lower = stats.min if stats and stats.has_min_max else None
                 upper = stats.max if stats and stats.has_min_max else None
             claim = Claim(group.num_rows,
-                          stats.null_count if stats and stats.has_null_count else None,
-                          bool(stats and stats.has_min_max), lower, upper)
+                          (evidence['null_count'] if fixed_binary else
+                           stats.null_count if stats and stats.has_null_count else None),
+                          (lower is not None and upper is not None) if fixed_binary
+                          else bool(stats and stats.has_min_max), lower, upper)
             batches = source.iter_batches(batch_size=65536, row_groups=[group_index],
                                           columns=[field.name], use_threads=False)
             chunks = ((batch.column(0).cast(tick_type).to_pylist() if temporal
@@ -122,6 +166,21 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
             actual = observe(chunks, limit=MAX_ROWS)
             result = compare(claim, actual)
             result.update(row_group=group_index, column=field.name, type=str(field.type))
+            if fixed_binary:
+                # A missing half leaves a gap, even for an all-null group.
+                # The present half can still contradict the decoded values.
+                if (lower is None) != (upper is None):
+                    if 'bounds_missing' not in result['unchecked']:
+                        result['unchecked'].append('bounds_missing')
+                    if actual.lower is None:
+                        result['violations'].append('bounds_without_values')
+                    else:
+                        if lower is not None and lower > actual.lower:
+                            result['violations'].append('lower_excludes_value')
+                        if upper is not None and upper < actual.upper:
+                            result['violations'].append('upper_excludes_value')
+                result['comparison'] = {'representation': 'unsigned_bytes',
+                                        'byte_width': field.type.byte_width}
             if temporal:
                 result['comparison'] = {'representation': 'integer_ticks', 'unit': unit}
             results.append(result)
@@ -137,7 +196,7 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
             'checked_columns': len(results), 'violation_count': violations,
             'unchecked_count': gaps, 'columns': results, 'unchecked': unchecked,
             'scope': ('row-group bounds, null counts and supported float NaN counts only; no page/index/bloom audit'
-                      if float_info is not None else
+                      if has_floats else
                       'row-group bounds and null counts only; no page/index/bloom audit')}
     if include_schema:
         from .schema import describe_schema
