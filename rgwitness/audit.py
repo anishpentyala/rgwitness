@@ -33,7 +33,10 @@ def audit_bytes(data: bytes, *, include_schema=False) -> dict:
                             or pa.types.is_large_string(t)
                             or pa.types.is_large_binary(t)
                             or pa.types.is_decimal(t) or pa.types.is_date(t)
-                            or pa.types.is_time(t) or pa.types.is_timestamp(t))
+                            or pa.types.is_time(t) or pa.types.is_timestamp(t)
+                            or (pa.types.is_dictionary(t)
+                                and (pa.types.is_string(t.value_type)
+                                     or pa.types.is_binary(t.value_type))))
     flat = all(supported(field.type) or pa.types.is_floating(field.type)
                or pa.types.is_null(field.type) for field in schema)
     # A nested column changes the mapping from Arrow fields to Parquet leaves.
