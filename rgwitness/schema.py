@@ -2,13 +2,18 @@
 
 
 def describe_schema(schema):
-    """Describe admitted Arrow scalar types without string-rendering equality."""
+    """Describe admitted flat Arrow types without string-rendering equality."""
     import pyarrow as pa
 
     def describe_type(kind):
         if pa.types.is_integer(kind):
             return {'kind': 'integer', 'bits': kind.bit_width,
                     'signed': pa.types.is_signed_integer(kind)}
+        if pa.types.is_dictionary(kind):
+            if not (pa.types.is_string(kind.value_type) or pa.types.is_binary(kind.value_type)):
+                raise ValueError('unsupported schema contract type')
+            return {'kind': 'dictionary', 'index_type': describe_type(kind.index_type),
+                    'value_type': describe_type(kind.value_type), 'ordered': kind.ordered}
         if pa.types.is_floating(kind):
             return {'kind': 'float', 'bits': kind.bit_width}
         if pa.types.is_decimal(kind):
@@ -78,6 +83,12 @@ def compare_schemas(entries):
             'scope': 'exact interpreted field order, names, types and nullability; metadata excluded'}
 
 
+def _valid_integer(kind):
+    return (isinstance(kind, dict) and set(kind) == {'kind', 'bits', 'signed'}
+            and kind['kind'] == 'integer' and type(kind['bits']) is int
+            and kind['bits'] in (8, 16, 32, 64) and type(kind['signed']) is bool)
+
+
 def valid_schema(schema):
     """Validate the optional JSON descriptor without importing the decoder."""
     if not isinstance(schema, dict) or set(schema) != {'format', 'fields'}:
@@ -102,8 +113,16 @@ def valid_schema(schema):
             if keys != {'kind'}:
                 return False
         elif name == 'integer':
-            if (keys != {'kind', 'bits', 'signed'} or type(kind['bits']) is not int
-                    or kind['bits'] not in (8, 16, 32, 64) or type(kind['signed']) is not bool):
+            if not _valid_integer(kind):
+                return False
+        elif name == 'dictionary':
+            # One bounded wrapper, not recursive admission of arbitrary types.
+            if (keys != {'kind', 'index_type', 'value_type', 'ordered'}
+                    or not _valid_integer(kind['index_type'])
+                    or type(kind['ordered']) is not bool
+                    or not isinstance(kind['value_type'], dict)
+                    or set(kind['value_type']) != {'kind'}
+                    or kind['value_type']['kind'] not in ('string', 'binary')):
                 return False
         elif name == 'float':
             if (keys != {'kind', 'bits'} or type(kind['bits']) is not int
