@@ -104,6 +104,31 @@ API equivalents are `audit_bytes(data, include_schema=True)`, `audit_in_worker(p
 
 This addition passed the complete suite on Linux CPython 3.10, 3.11 and 3.12 with PyArrow 25.0.1. On CPython 3.14, the 17 new schema tests passed, but the full suite retained a pre-existing closed-stream failure during argparse color detection, reproduced on the unchanged base. No full Python 3.14 compatibility claim is made. Tests compare 200 seeded schema pairs against Arrow's native structural equality, cover each reported difference category, retain statistics contradictions and gaps separately, verify snapshot replacement/duplicate-path behavior, compare direct and isolated reports, and check unavailable members, timeouts and malformed worker schema output.
 
+## Dictionary string and binary columns
+
+Flat Arrow dictionary columns with decoded `string` or `binary` values are admitted. This includes string categorical columns restored from stored Arrow schema information by PyArrow. It is different from Parquet's physical dictionary encoding, which may also decode to an ordinary scalar Arrow type and was already supported. See Arrow's [dictionary read options](https://arrow.apache.org/docs/python/parquet/parquet_type_handling.html) and the [Parquet encoding definition](https://parquet.apache.org/docs/file-format/data-pages/encodings/).
+
+The scan compares decoded values, not integer category codes or every entry in a dictionary's vocabulary. An unused category is not an extra row. An ordered Arrow dictionary does not replace the Parquet string/binary value order used for the statistics comparison. Missing statistics remain INCOMPLETE; incorrect bounds or null counts can still produce CONTRADICTED.
+
+With `--include-schema` or `--require-schema-match`, a dictionary type has this bounded structure:
+
+```json
+{
+  "kind": "dictionary",
+  "index_type": {"kind": "integer", "bits": 8, "signed": true},
+  "value_type": {"kind": "string"},
+  "ordered": false
+}
+```
+
+Index width and sign, value type and the ordered flag are compared exactly. Dictionary contents, category order and code-to-value mappings are **not** part of the Arrow type descriptor or this equality contract. Two files can have equal type descriptors and different categories, values or category mappings. No dictionary values are copied into the schema descriptor. Ordinary bound evidence still contains the claimed and observed extrema. `rgwitness/schema-v1` gains this type kind; older strict consumers may reject these newly admitted reports. Existing admitted scalar descriptors are unchanged.
+
+The descriptor records the decoder's interpreted type, not necessarily the type that existed before writing the file. In PyArrow 25.0.1 round trips tested here, large-string and large-binary dictionary values normalize to ordinary string/binary dictionary values. Numeric dictionaries instead decode as ordinary numeric types and keep their existing scalar audit paths. Other dictionary value types are not newly admitted as dictionary wrappers; nested layouts remain refused. The [Arrow dictionary type](https://arrow.apache.org/docs/python/generated/pyarrow.DictionaryType.html) stores index/value types and the ordered flag, not the dictionary's values.
+
+Existing input and worker limits are unchanged. Declared row/cell limits do not count unused dictionary entries or cap decompression/native memory. This support does not add a security boundary, an independent decoder, a codebook equality check or a category-count audit.
+
+The complete 139-test suite passed on Linux CPython 3.10, 3.11 and 3.12 with PyArrow 25.0.1. The 17 new dictionary tests include 200 seeded categorical files checked against a Python value/extrema oracle, all signed/unsigned 8/16/32/64-bit index widths, ordered flags, unchanged decoded rows after lower/upper/null-count footer corruption, missing statistics, empty/all-null inputs, multiple groups/batches, exact schema differences, and direct/worker/batch snapshot agreement. All 17 passed on CPython 3.14 too, but the full suite retained the same pre-existing argparse closed-stream error as the unchanged base. No full Python 3.14 compatibility claim is made.
+
 ## What is checked
 
 - Each row group's declared row count against its unfiltered decoded count.
@@ -133,13 +158,13 @@ The comparison rules follow the [Parquet format statistics and column-order defi
 
 ## Scope and limits
 
-Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder, plus the restricted float coverage above. Temporal comparisons use raw stored bounds and integer-cast decoded ticks. An unexpected temporal physical storage type is unchecked rather than compared in mismatched units. Null-type columns remain unchecked, so a mixed file cannot silently receive CONSISTENT.
+Supported: flat scalar integer, boolean, UTF-8 string, binary, decimal, date, time and timestamp columns supported by the installed PyArrow decoder, the dictionary string/binary coverage above, plus the restricted float coverage above. Temporal comparisons use raw stored bounds and integer-cast decoded ticks. An unexpected temporal physical storage type is unchecked rather than compared in mismatched units. Null-type columns remain unchecked, so a mixed file cannot silently receive CONSISTENT.
 
 Nested layouts, duplicate field names, dotted field names and external column chunks are refused. The dotted-name restriction avoids ambiguity in reader column projection. No page-statistics, column-index, bloom-filter, checksum, encoding, sort-order or schema-evolution audit is claimed. A decoder's interpretation and row boundaries are still part of the evidence, not independently verified format parsing.
 
 Admission policies: one regular local file, at most 64 MiB; at most 2,000,000 declared rows, 128 columns, 4,000,000 declared cells and 4,096 row-group/column pairs. The file is read into a bounded byte snapshot before parsing. Reads use nonblocking open where supported to refuse writerless FIFOs rather than wait on them. These limits are policy, not Parquet format limits. Files with float columns also have a 1 MiB footer limit, a 100,000-value Compact parsing budget and a nesting-depth limit of 32; even fields not used for comparison consume that budget. The footer reader refuses malformed fields, duplicate/nonpositive field IDs, overflow, trailing data and unsupported Compact types. These are admission policies, not universal format-validity judgments, and can reject files admitted by earlier releases. PyArrow reads metadata before these extra checks, so the new limits do not bound its initial parsing. This is not a hostile-file sandbox, a decompression budget, a filesystem timeout or a memory/time guarantee. Do not use it on untrusted files without process isolation.
 
-Validated locally on Linux CPython 3.10.12 with PyArrow 25.0.1. Other Python versions, operating systems and PyArrow versions have not yet been validated. The dependency range is deliberately narrow, not a compatibility claim for every release in it.
+The complete suite passed locally on Linux CPython 3.10, 3.11 and 3.12 with PyArrow 25.0.1. The Python 3.14 limitation is noted above. Other operating systems and PyArrow versions have not been validated. The dependency range is deliberately narrow, not a compatibility claim for every release in it.
 
 ## Opt-in worker budgets
 
