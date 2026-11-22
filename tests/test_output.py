@@ -49,6 +49,19 @@ class OutputTests(unittest.TestCase):
             self.assertEqual(main(['/missing/rgwitness.parquet']), 2)
             self.assertIs(sys.stdout, stream)
 
+    def test_closed_stream_report_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            good, bad = self.paths(directory)
+            for arguments in ([good], [bad], [good, '--include-schema'],
+                              [good, '--isolate'], [good, bad, '--batch']):
+                with self.subTest(arguments=arguments):
+                    stream = io.StringIO()
+                    stream.close()
+                    with contextlib.redirect_stdout(stream):
+                        self.assertEqual(main(arguments), 2)
+                        self.assertIs(sys.stdout, stream)
+                    self.assertTrue(stream.closed)
+
     def test_callable_success_flushes(self):
         stream = BrokenStream('none', OSError)
         with contextlib.redirect_stdout(stream), patch.object(stream, 'flush', wraps=stream.flush) as flush:
