@@ -31,8 +31,10 @@ def compare_float(claim, chunks, *, width, limit):
             elif lower is None:
                 lower = upper = value
             else:
-                lower = min(lower, value)
-                upper = max(upper, value)
+                if value < lower:
+                    lower = value
+                if value > upper:
+                    upper = value
     violations, unchecked = [], []
     if rows != claim['num_values']:
         violations.append('row_count')
