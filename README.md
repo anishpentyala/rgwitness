@@ -4,6 +4,30 @@ Check Parquet row-group min/max bounds and null counts against the values actual
 
 This is an experimental, read-only audit for local files. It does not repair files, run SQL, or claim that a query engine is correct.
 
+## Try a clean file
+
+Python 3.10 or newer, with PyArrow 25.x installed by the package. This creates a
+small local fixture; it does not download data or change an existing file.
+
+```sh
+python -m pip install "git+https://github.com/anishpentyala/rgwitness.git"
+python - <<'PYTHON'
+import pyarrow as pa
+import pyarrow.parquet as pq
+pq.write_table(pa.table({"x": [10, 20, None]}), "sample.parquet")
+PYTHON
+rgwitness sample.parquet
+```
+
+This fixture exits 0 with `CONSISTENT`: its supported footer claims agree with
+the unfiltered decoded values. The corrupted-footer example below shows the
+failure this audit is intended to catch. Real files can instead return
+`INCOMPLETE`, including when claims or types are unsupported. Do not treat that
+as a clean result. This is experimental, not a Parquet validity certificate.
+
+A PyPI release is being prepared. Until its package page is linked here, use the
+source-install command above.
+
 ## Run
 
 ```sh
