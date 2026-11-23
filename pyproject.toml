@@ -5,11 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rgwitness"
 version = "0.1.0"
+authors = [{name = "Anish Pentyala"}]
+keywords = ["parquet", "data-validation", "pyarrow", "row-groups"]
 description = "Check Parquet row-group statistics against unfiltered decoded values"
 requires-python = ">=3.10"
 dependencies = ["pyarrow>=25.0.1,<26"]
 license = {text = "MIT"}
 readme = "README.md"
+
+[project.urls]
+Homepage = "https://github.com/anishpentyala/rgwitness"
+Repository = "https://github.com/anishpentyala/rgwitness"
+Issues = "https://github.com/anishpentyala/rgwitness/issues"
 
 [project.scripts]
 rgwitness = "rgwitness.__main__:entrypoint"
