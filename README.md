@@ -233,6 +233,12 @@ Worker behavior was tested on Linux CPython 3.10.12 with PyArrow 25.0.1: matchin
 
 These are scope distinctions, not an exhaustive claim of novelty or a performance comparison.
 
+## Scan-loop implementation
+
+Scalar and supported float extrema use direct comparisons while scanning decoded values. This avoids two built-in function calls per non-null, non-NaN value. Missing-statistics handling, row budgets, NaN exclusion and first-seen signed-zero evidence are unchanged. This does not change the decoder or broaden supported inputs.
+
+On two controlled 200,000-row, four-column fixtures on Linux CPython 3.10.12 and PyArrow 25.0.1, median whole-audit time was about 46–50% lower than the preceding scan loop. These are local synthetic timings, not a general speed guarantee. File layout, decode cost, types and null density affect the result; no memory reduction is claimed.
+
 ## Development
 
 ```sh
