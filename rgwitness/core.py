@@ -33,8 +33,10 @@ def observe(chunks: Iterable[Iterable[Any]], *, limit: int | None = None) -> Obs
             elif lower is None:
                 lower = upper = value
             else:
-                lower = min(lower, value)
-                upper = max(upper, value)
+                if value < lower:
+                    lower = value
+                if value > upper:
+                    upper = value
     return Observed(rows, nulls, lower, upper)
 
 
