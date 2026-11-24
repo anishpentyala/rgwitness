@@ -10,7 +10,7 @@ Python 3.10 or newer, with PyArrow 25.x installed by the package. This creates a
 small local fixture; it does not download data or change an existing file.
 
 ```sh
-python -m pip install "git+https://github.com/anishpentyala/rgwitness.git"
+python -m pip install rgwitness==0.1.0
 python - <<'PYTHON'
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -25,8 +25,14 @@ failure this audit is intended to catch. Real files can instead return
 `INCOMPLETE`, including when claims or types are unsupported. Do not treat that
 as a clean result. This is experimental, not a Parquet validity certificate.
 
-A PyPI release is being prepared. Until its package page is linked here, use the
-source-install command above.
+Install the pinned 0.1.0 release from [PyPI](https://pypi.org/project/rgwitness/0.1.0/):
+
+```sh
+python -m pip install rgwitness==0.1.0
+```
+
+The package release is pinned separately from later repository development.
+Source-install commands in this README use the checked-out code, which may be newer.
 
 ## Run
 
